@@ -1,6 +1,8 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
+import requests
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="First Response", page_icon="🚨", layout="centered")
@@ -37,13 +39,52 @@ GUIDANCE = {
     ],
 }
 
-# ---------- SAMPLE NEARBY HELP LOCATIONS ----------
-# Replace these with real coordinates near your demo city if you want it more accurate.
-NEARBY_HELP = [
+# ---------- FALLBACK SAMPLE LOCATIONS (used if live location/lookup fails) ----------
+FALLBACK_HELP = [
     {"name": "City General Hospital", "lat": 12.9716, "lon": 77.5946, "type": "Hospital"},
     {"name": "Central Police Station", "lat": 12.9750, "lon": 77.6000, "type": "Police"},
     {"name": "Fire Station 4", "lat": 12.9700, "lon": 77.5900, "type": "Fire"},
 ]
+
+ICON_MAP = {"Hospital": "plus", "Police": "shield", "Fire": "fire"}
+
+
+def get_nearby_places(lat, lon, radius_m=4000):
+    """Query OpenStreetMap's Overpass API for nearby hospitals, police, and fire stations."""
+    query = f"""
+    [out:json][timeout:15];
+    (
+      node["amenity"="hospital"](around:{radius_m},{lat},{lon});
+      node["amenity"="police"](around:{radius_m},{lat},{lon});
+      node["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+    );
+    out center 10;
+    """
+    try:
+        resp = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        places = []
+        type_lookup = {"hospital": "Hospital", "police": "Police", "fire_station": "Fire"}
+        for el in data.get("elements", []):
+            tags = el.get("tags", {})
+            amenity = tags.get("amenity")
+            name = tags.get("name", type_lookup.get(amenity, "Unknown"))
+            if "lat" in el and "lon" in el:
+                places.append({
+                    "name": name,
+                    "lat": el["lat"],
+                    "lon": el["lon"],
+                    "type": type_lookup.get(amenity, "Other"),
+                })
+        return places
+    except Exception:
+        return []
+
 
 # ---------- HEADER ----------
 st.title("🚨 First Response")
@@ -66,22 +107,49 @@ for i, step in enumerate(GUIDANCE[emergency_type], start=1):
 
 st.divider()
 
-# ---------- STEP 3: MAP OF NEARBY HELP ----------
+# ---------- STEP 3: LIVE LOCATION + NEARBY HELP ----------
 st.subheader("3. Nearby help")
+st.write("Tap the button below and allow location access in your browser to find real nearby help.")
 
-# Center map on the average of sample locations (swap with real user location later if you add geolocation)
-center_lat = sum(p["lat"] for p in NEARBY_HELP) / len(NEARBY_HELP)
-center_lon = sum(p["lon"] for p in NEARBY_HELP) / len(NEARBY_HELP)
+location = streamlit_geolocation()
+
+user_lat, user_lon = None, None
+if location and location.get("latitude") is not None:
+    user_lat = location["latitude"]
+    user_lon = location["longitude"]
+    st.success(f"Location found: {user_lat:.4f}, {user_lon:.4f}")
+
+if user_lat and user_lon:
+    with st.spinner("Looking up nearby hospitals, police, and fire stations..."):
+        places = get_nearby_places(user_lat, user_lon)
+    if not places:
+        st.warning("Couldn't find live nearby places — showing sample locations instead.")
+        places = FALLBACK_HELP
+        center_lat, center_lon = user_lat, user_lon
+    else:
+        center_lat, center_lon = user_lat, user_lon
+else:
+    st.info("No location yet — showing sample locations. Tap the button above to use your real location.")
+    places = FALLBACK_HELP
+    center_lat = sum(p["lat"] for p in places) / len(places)
+    center_lon = sum(p["lon"] for p in places) / len(places)
 
 m = folium.Map(location=[center_lat, center_lon], zoom_start=14)
 
-icon_map = {"Hospital": "plus", "Police": "shield", "Fire": "fire"}
-for place in NEARBY_HELP:
+if user_lat and user_lon:
+    folium.Marker(
+        location=[user_lat, user_lon],
+        popup="You are here",
+        tooltip="Your location",
+        icon=folium.Icon(color="blue", icon="user"),
+    ).add_to(m)
+
+for place in places[:15]:
     folium.Marker(
         location=[place["lat"], place["lon"]],
         popup=f"{place['name']} ({place['type']})",
         tooltip=place["name"],
-        icon=folium.Icon(color="red", icon=icon_map.get(place["type"], "info-sign")),
+        icon=folium.Icon(color="red", icon=ICON_MAP.get(place["type"], "info-sign")),
     ).add_to(m)
 
 st_folium(m, width=700, height=400)
@@ -99,12 +167,12 @@ if st.button("🚨 Generate Alert Message"):
     if contact_number.strip() == "":
         st.error("Please enter a phone number first.")
     else:
+        loc_for_alert = (user_lat, user_lon) if user_lat and user_lon else (center_lat, center_lon)
         message = (
             f"EMERGENCY ALERT: {emergency_type} in progress. "
-            f"I need help. My approximate location: "
-            f"https://www.google.com/maps?q={center_lat},{center_lon}"
+            f"I need help. My location: "
+            f"https://www.google.com/maps?q={loc_for_alert[0]},{loc_for_alert[1]}"
         )
-        # WhatsApp deep link - no API key or backend needed
         whatsapp_link = f"https://wa.me/{contact_number.strip()}?text={message.replace(' ', '%20')}"
         st.success("Alert message ready. Click below to send via WhatsApp:")
         st.markdown(f"[📲 Send WhatsApp Alert]({whatsapp_link})")
