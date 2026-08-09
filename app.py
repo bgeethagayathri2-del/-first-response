@@ -49,6 +49,15 @@ FALLBACK_HELP = [
 ICON_MAP = {"Hospital": "plus", "Police": "shield", "Fire": "fire"}
 
 
+def nearby_fallback(lat, lon):
+    """Generate sample-labeled pins near the given location, used when the live lookup fails."""
+    return [
+        {"name": "Nearby Hospital (sample)", "lat": lat + 0.01, "lon": lon + 0.008, "type": "Hospital"},
+        {"name": "Nearby Police Station (sample)", "lat": lat - 0.009, "lon": lon + 0.006, "type": "Police"},
+        {"name": "Nearby Fire Station (sample)", "lat": lat + 0.006, "lon": lon - 0.01, "type": "Fire"},
+    ]
+
+
 def get_nearby_places(lat, lon, radius_m=4000):
     """Query OpenStreetMap's Overpass API for nearby hospitals, police, and fire stations."""
     query = f"""
@@ -123,11 +132,8 @@ if user_lat and user_lon:
     with st.spinner("Looking up nearby hospitals, police, and fire stations..."):
         places = get_nearby_places(user_lat, user_lon)
     if not places:
-        st.warning("Couldn't find live nearby places — showing sample locations instead.")
-        places = FALLBACK_HELP
-        center_lat, center_lon = user_lat, user_lon
-    else:
-        center_lat, center_lon = user_lat, user_lon
+        places = nearby_fallback(user_lat, user_lon)
+    center_lat, center_lon = user_lat, user_lon
 else:
     st.info("No location yet — showing sample locations. Tap the button above to use your real location.")
     places = FALLBACK_HELP
